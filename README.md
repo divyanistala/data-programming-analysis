@@ -30,7 +30,8 @@ This project explores large-scale flight datasets using both Python and R to unc
 
 ---
 
-## 📈 Outputs
+## Outputs
+
 Analysis results are available within the Jupyter Notebooks and RMarkdown files, including visualisations and statistical outputs generated during the workflow.
 ---
 
