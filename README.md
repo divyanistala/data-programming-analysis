@@ -50,8 +50,12 @@ Analysis results are available within the Jupyter Notebooks and RMarkdown files,
 - RMarkdown  
 
 ---
-
+##  Report
+Detailed analysis and findings are available in:
+- `report/Report.pdf`
+- 
 ## Project Structure
+- `data/` — dataset not included (see link above)
 - `notebooks/` — Python-based analysis  
 - `rmd/` — R-based analysis    
-- `data/` — dataset not included (see link above)  
+- `report/Report.pdf` — Flight data analysis report
