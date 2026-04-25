@@ -1,0 +1,311 @@
+---
+title: "ST2195 Coursework Part 2"
+author: "Divya Nistala"
+date: "2025-03-29"
+output: html_document
+---
+## 2
+I have chosen to use the 5 consecutive years, from 2002-2006, to help me with my analysis. I will also be using any additional information provided by the Harvard dataset to further my research.
+
+## Preparation of Analysis
+## Required packages
+library(DBI)
+library(RSQLite)
+library(knitr)
+library(dplyr) 
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(scales) 
+library(reshape2)
+library(lubridate)
+library(gplots) 
+library(ggpubr)
+library(caret) 
+library(ROCit)
+library(AUC)
+library(nnet)
+library(ROSE)
+library(stats) 
+library(gridExtra)
+library(readr)
+library(data.table)
+library(broom)
+
+# Set Working Directory to Harvard Dataverse Files
+setwd("C:/Users/divya/Downloads/Uni/ST2195/ST2195/Coursework/dataverse_files")
+getwd()
+
+## Planes dataset
+
+# Create connection the database named "airline2_r.db"
+conn <- dbConnect(RSQLite::SQLite(), "airline2_r.db")
+dbConnect(conn)
+
+# Create data tables in database 
+airports <- read.csv("airports.csv", header = TRUE)
+carriers <- read.csv("carriers.csv", header = TRUE)
+planes <- read.csv("plane-data.csv", header = TRUE)
+
+dbWriteTable(conn, "airports", airports, overwrite = TRUE )
+dbWriteTable(conn, "carriers", carriers, overwrite = TRUE )
+dbWriteTable(conn, "planes", planes, overwrite = TRUE )
+
+
+## Load in chosen 5 years of consecutive data (2002-2006)
+
+for(i in c(2002:2006)) {
+  filename <- paste0(i, ".csv.bz2")
+  print(paste("Processing:", filename))
+  
+  
+  ontime <- read.csv(filename, header = TRUE)
+  if(i == 2002) {
+    dbWriteTable(conn, "ontime", ontime, overwrite = TRUE)
+  } else {
+    dbWriteTable(conn, "ontime", ontime, append = TRUE)
+  }
+}
+
+## Part 2(a)
+
+# Add Indexes to improve performance 
+dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_year ON ontime (Year);")
+dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_dayofweek ON ontime (DayOfWeek);")
+dbExecute(conn, "CREATE INDEX IF NOT EXISTS idx_deptime ON ontime (DepTime);")
+
+# Filter 5 years of data into Day of the Week 
+avg_delay_by_day <- tbl(conn, "ontime") %>%
+  filter(Year >= 2002 & Year <= 2006) %>%
+  group_by(Year, DayOfWeek) %>%
+  summarise(AvgDelay = mean(ArrDelay, na.rm = TRUE), .groups = "drop") %>%
+  collect()  # Summarized data brought into memory
+
+# Data Preparation for Time of Day Plot
+Delays <- tbl(conn, "ontime") %>%
+  filter(ArrDelay > 0 & Year >= 2002 & Year <= 2006) %>%
+  mutate(
+    TimeofDay = case_when(
+      CRSDepTime %in% 500:1159  ~ "Morning",
+      CRSDepTime %in% 1200:1659 ~ "Afternoon",
+      CRSDepTime %in% 1700:2059 ~ "Evening",
+      TRUE ~ "Night"
+    )
+  ) %>%
+  group_by(Year, DayOfWeek, TimeofDay) %>%
+  summarise(AvgDelay = mean(ArrDelay, na.rm = TRUE), .groups = "drop") %>%
+  collect() %>%  
+  mutate(
+    Day = factor(DayOfWeek, labels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+  ) %>%
+  na.omit()
+
+# Plot Average Delay timings against Day of the Week for all the 5 years  
+plot_day <- ggplot(avg_delay_by_day, aes(x = factor(DayOfWeek, labels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")), y = AvgDelay, fill = factor(Year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average Delay by Day of the Week (2002-2006)", 
+       y = "Average Delay (minutes)", 
+       x = "Day of the Week") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1))
+
+# Plot Average Delay timings against Time of Day for all the 5 years 
+plot_time_of_day <- ggplot(Delays, aes(x = TimeofDay, y = AvgDelay, fill = TimeofDay)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1), 
+        legend.position = "none") +
+  xlab("Time of Day") +
+  ylab("Average Arrival Delay (in Minutes)") + 
+  ggtitle("Average Arrival Delay by Time of Day (2002-2006)")
+
+# Combine and display the plots together
+plot_day + plot_time_of_day
+
+## Part 2(b)
+
+# Same list of years to analyse
+years <- 2002:2006
+
+# Load and clean the plane data 
+planes <- read_csv("plane-data.csv", show_col_types = FALSE) %>%
+  rename_all(tolower) %>%
+  mutate(
+    issue_date = as.Date(issue_date, format = "%m/%d/%Y"),
+    issue_year = as.numeric(format(issue_date, "%Y"))
+  ) %>%
+  filter(!is.na(issue_year))  # Only keep rows with valid manufacture year
+
+# Create plots to store correlation outputs
+plot_list_2b <- list()
+correlation_summary <- list()
+
+# Repeat for each of the 5 years 
+for (year in years) {
+  message("Processing year: ", year)
+  filename <- paste0(year, ".csv.bz2")
+  
+  # Load flight data and preprocess
+  ontime <- read_csv(filename, show_col_types = FALSE) %>%
+    select(TailNum, ArrDelay, Year) %>%
+    rename(
+      tailnum = TailNum,
+      arr_delay = ArrDelay,
+      flight_year = Year
+    ) %>%
+    filter(!is.na(tailnum), !is.na(arr_delay), arr_delay >= 0)
+  
+# Combine with our plane data
+  merged <- inner_join(ontime, planes, by = "tailnum") %>%
+    mutate(
+      plane_age = flight_year - issue_year
+    ) %>%
+    filter(plane_age >= 0)  # Remove invalid ages
+
+# To identify null years to exclude from analysis
+  if (nrow(merged) == 0) next
+  
+# Summarize average delay timings by plane age
+  grouped <- merged %>%
+    group_by(plane_age) %>%
+    summarise(
+      average_delay = mean(arr_delay, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    drop_na()
+
+# To again identify null years to exclude from analysis
+  if (nrow(grouped) < 2) next
+
+# Generate plots, red scatter plots with black regression line 
+  plot <- ggscatter(
+    grouped, x = "plane_age", y = "average_delay",
+    color = "red",                 
+    add = "reg.line", add.params = list(color = "black"), 
+    xlab = "Age of Aircraft (Years)",
+    ylab = "Average Arrival Delay (Minutes)",
+    title = paste("Year", year)
+  )
+
+# Save the generated plots 
+  plot_list_2b[[as.character(year)]] <- plot
+
+# Now, we conduct the Correlation test
+  corr_test <- cor.test(grouped$plane_age, grouped$average_delay, method = "pearson")
+  r_value <- corr_test$estimate
+  r_classification <- case_when(
+    r_value > 0.87 ~ "strong positive",
+    r_value > 0.5  ~ "moderate positive",
+    r_value > 0    ~ "weak positive",
+    r_value > -0.5 ~ "weak negative",
+    r_value > -0.87 ~ "moderate negative",
+    TRUE ~ "strong negative"
+  )
+
+# Save Correlation summary
+  correlation_summary[[as.character(year)]] <- list(
+    r = r_value,
+    classification = r_classification,
+    message = paste(
+      "Year", year, ": A correlation coefficient of",
+      round(r_value, 2), "indicates a", r_classification,
+      "correlation between aircraft age and arrival delay."
+    )
+  )
+}
+
+# Print correlation messages to explain strength of relationship
+for (res in correlation_summary) {
+  print(res$message)
+}
+
+# Combine plots together 
+if (length(plot_list_2b) > 0) {
+  wrap_plots(plot_list_2b) + plot_layout(ncol = 2)
+} else {
+  print("No plots to display.")
+}
+
+## 2(c)
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(broom)
+library(ggplot2)
+library(patchwork)
+
+years <- 2002:2006
+top_n <- 10  # Number of top coefficients to show per year
+plot_list <- list()  # Store plots
+
+# Load and clean the airport data
+airports <- read_csv("airports.csv", show_col_types = FALSE) %>%
+  rename(latitude = lat, longitude = long) %>%
+  select(iata, latitude, longitude) %>%
+  distinct()
+
+airports_origin <- airports %>%
+  rename(Origin = iata, origin_lat = latitude, origin_lon = longitude)
+
+airports_dest <- airports %>%
+  rename(Dest = iata, dest_lat = latitude, dest_lon = longitude)
+
+for (year in years) {
+  message("Processing year: ", year)
+  filename <- paste0(year, ".csv.bz2")
+  
+# Load necessary predictor variables from each of the 5 selected years
+  ontime <- read_csv(filename, show_col_types = FALSE) %>%
+    select(Diverted, Month, DayOfWeek, CRSDepTime, CRSArrTime,
+           Distance, Origin, Dest, UniqueCarrier) %>%
+    filter(!is.na(Diverted)) %>%
+    mutate(
+      diverted_flag = ifelse(Diverted == 1, 1, 0),
+      dep_hour = floor(CRSDepTime / 100),
+      arr_hour = floor(CRSArrTime / 100)
+    ) %>%
+    filter(!is.na(dep_hour), !is.na(arr_hour), Distance > 0)
+
+# Combine filtered data with airport coordinates data
+  ontime <- ontime %>%
+    inner_join(airports_origin, by = "Origin") %>%
+    inner_join(airports_dest, by = "Dest") %>%
+    mutate(
+      UniqueCarrier = factor(UniqueCarrier),
+      DayOfWeek = factor(DayOfWeek)
+    )
+
+# Combine the datasets to be plotted 
+  model <- glm(
+    diverted_flag ~ Month + DayOfWeek + dep_hour + arr_hour + Distance +
+      origin_lat + origin_lon + dest_lat + dest_lon + UniqueCarrier,
+    data = ontime,
+    family = binomial()
+  )
+
+# We filter out the most popular predictors
+  tidy_coef <- tidy(model) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(abs_estimate = abs(estimate)) %>%
+    arrange(desc(abs_estimate)) %>%
+    slice(1:top_n)
+
+# Plot the coefficient ouputs as bar plots 
+  p <- ggplot(tidy_coef, aes(x = reorder(term, estimate), y = estimate)) +
+    geom_bar(stat = "identity", fill = "brown", color = "black") +
+    coord_flip() +
+    labs(title = paste("Coefficients of Logistic Regression Model - Year", year),
+         x = "Variables", y = "Coefficient") +
+    theme_minimal(base_size = 10)
+
+  plot_list[[as.character(year)]] <- p
+
+# Just a clean up to save memory
+  rm(ontime, model, tidy_coef)
+  gc()
+}
+
+# Combine all the 5 year plots 
+wrap_plots(plot_list, ncol = 2)

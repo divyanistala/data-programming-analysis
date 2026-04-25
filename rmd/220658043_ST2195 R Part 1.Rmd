@@ -1,0 +1,115 @@
+---
+title: "ST2195 Coursework Part 1"
+author: "Divya Nistala"
+date: "2025-03-27"
+output: html_document
+---
+## 1(a)
+library(ggplot2)
+set.seed(123)  
+
+# We will follow the Metropolis-Hastings MCMC Algorithm 
+
+metropolis_hastings <- function(N, s, x0) {
+  x <- numeric(N) 
+  x[1] <- x0  
+  
+  for (i in 2:N) {
+    x_proposed <- rnorm(1, mean = x[i-1], sd = s)  
+    
+# To evaluate which values to keep or remove
+
+  acceptance_ratio <- exp(-abs(x_proposed)) / exp(-abs(x[i-1]))  
+    if (runif(1) < acceptance_ratio) {
+      x[i] <- x_proposed  
+    } else {
+      x[i] <- x[i-1]
+    }
+  }
+  
+  return(x)
+}
+
+# From question
+N <- 10000  
+s <- 1  
+x0 <- 0   
+
+# Setting up algorithm 
+samples <- metropolis_hastings(N, s, x0)
+
+samples_df <- data.frame(x = samples)
+
+# We use ggplot2 to plot the figure
+ggplot(samples_df, aes(x = x)) +
+  geom_histogram(aes(y = ..density..), bins = 50, fill = "lightblue", color = "black") +
+  stat_function(fun = function(x) 0.5 * exp(-abs(x)), color = "red", size = 1) +
+  labs(title = "Histogram and Kernel Density Plot with PDF Overlay", 
+       x = "x", y = "Density") +
+  theme_minimal()
+  
+# Means and Std Devn  
+
+cat("Sample Mean:", mean(samples), "\n")
+cat("Sample Standard Deviation:", sd(samples), "\n")
+
+## 1(b)
+library(ggplot2)
+
+metropolis_hastings <- function(N, s, x0) {
+  x <- numeric(N)
+  x[1] <- x0
+  
+  for (i in 2:N) {
+    x_proposed <- rnorm(1, mean = x[i-1], sd = s)
+    acceptance_ratio <- exp(-abs(x_proposed)) / exp(-abs(x[i-1]))
+    
+    if (runif(1) < acceptance_ratio) {
+      x[i] <- x_proposed
+    } else {
+      x[i] <- x[i-1]
+    }
+  }
+  
+  return(x)
+}
+
+# We will generate the R statistic
+compute_rhat <- function(N, s, J) {
+  chains <- matrix(NA, nrow = N, ncol = J)
+  
+# Varying starting outputs
+  for (j in 1:J) {
+    chains[, j] <- metropolis_hastings(N, s, x0 = rnorm(1, 0, 2))  
+  }
+
+# Generate the means and variance within the chains
+  M_j <- colMeans(chains)
+  V_j <- apply(chains, 2, var)
+  
+# We will also generate W, the within-chain variance, and B, the between-chain variance
+  W <- mean(V_j)
+  
+  M <- mean(M_j)
+  B <- sum((M_j - M)^2) / (J - 1)
+  
+# Getting the R statistic
+  R_hat <- sqrt((B / W) + 1)
+  return(R_hat)
+}
+
+# Producing various s outputs  
+s_values <- seq(0.001, 1, length.out = 50)
+rhat_values <- sapply(s_values, function(s) compute_rhat(N = 2000, s = s, J = 4))
+
+
+rhat_df <- data.frame(s = s_values, R_hat = rhat_values)
+
+# We will plot the R statistic against s with ggplot2
+ggplot(rhat_df, aes(x = s, y = R_hat)) +
+  geom_line(color = "blue", size = 1) +
+  geom_hline(yintercept = 1.05, linetype = "dashed", color = "red") +
+  labs(title = "R-hat values vs. Proposal Std Deviation (s)",
+       x = "Proposal Std Deviation (s)",
+       y = "R-hat") +
+  theme_minimal()
